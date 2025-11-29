@@ -1,9 +1,8 @@
 from django.contrib import admin
 import os
 from django.urls import path,include, re_path
-from django.http import FileResponse, Http404, JsonResponse
+from django.http import FileResponse, JsonResponse
 from django.conf import settings
-from django.conf.urls.static import static
 
 
 def api_root_hidden(request):

@@ -1782,10 +1782,13 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 
     def get_studenttopicstatus(self, obj):
         trainer_courses = self.context.get("trainer_courses")
+
         qs = obj.topic_statuses.all()
+
         if trainer_courses:
-            qs = qs.filter(topic__course_id__in=trainer_courses)
-        return StudentTopicStatusSerializer(qs, many=True).data if qs.exists() else []
+            qs = [s for s in qs if s.topic.course_id in trainer_courses]
+
+        return StudentTopicStatusSerializer(qs, many=True).data
     
     def get_trainer(self, obj):
 
@@ -1804,77 +1807,52 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         ]
     
     def get_notes(self, obj):
-    
-        from .models import Note  
+        student_ct = ContentType.objects.get_for_model(obj)
 
         notes_qs = Note.objects.filter(
-            object_id=obj.pk,
-            content_type__model=obj.__class__.__name__.lower()
-        ).order_by('-created_at')
-
-        def convert_status(value):
-
-            if isinstance(value, str):
-                if value.lower() == "true":
-                    return True
-                if value.lower() == "false":
-                    return False
-            return value
+            content_type=student_ct,
+            object_id=obj.pk
+        ).order_by("-created_at")
 
         return [
             {
-                "note_id": note.id,
-                "reason": note.reason,
-                "created_by": note.created_by,
-                "status": note.status,
-                "created_at": note.created_at.strftime("%Y-%m-%d %H:%M"),
+                "note_id": n.id,
+                "reason": n.reason,
+                "created_by": n.created_by,
+                "status": n.status,
+                "created_at": n.created_at.strftime("%Y-%m-%d %H:%M"),
             }
-            for note in notes_qs
+            for n in notes_qs
         ]
     
     def get_batch(self, obj):
         final_batches = []
 
-        # ---------------- OLD BATCHES ----------------
-        old_batch_ids = BatchCourseTrainer.objects.filter(
-            student=obj
-        ).values_list('batch_id', flat=True).distinct()
-
-        old_batches = Batch.objects.filter(
-            batch_id__in=old_batch_ids,
-            is_archived=False
-        )
-
-        for batch in old_batches:
-            bct = BatchCourseTrainer.objects.filter(batch=batch, student=obj).first()
-            trainer = bct.trainer if bct else None
-
-            final_batches.append({
-                "batch_id": batch.batch_id,
-                "batch_name": batch.batch_name,
-                "title": batch.title,
-                "course_id": bct.course.course_id if bct else None,
-                "course_name": bct.course.course_name if bct else None,
-                "trainer_id": trainer.employee_id if trainer else None,
-                "trainer_name": trainer.full_name if trainer else None,
-                "type": "old"
-            })
-
-        # ---------------- NEW BATCHES ----------------
-        new_batches = obj.new_batches.filter(is_archived=False)
-
-        for nb in new_batches:
-            trainer = nb.trainer
-
+        # NEW BATCHES (preloaded)
+        for nb in obj.new_batches.all():
             final_batches.append({
                 "batch_id": nb.batch_id,
                 "batch_name": nb.title,
                 "title": nb.title,
                 "course_id": nb.course.course_id,
                 "course_name": nb.course.course_name,
-                "trainer_id": trainer.employee_id if trainer else None,
-                "trainer_name": trainer.full_name if trainer else None,
+                "trainer_id": nb.trainer.employee_id if nb.trainer else None,
+                "trainer_name": nb.trainer.full_name if nb.trainer else None,
                 "type": "new"
+            })
+
+        # OLD BATCHES (preloaded reverse relation)
+        for bct in obj.batchcoursetrainer_set.all():
+            batch = bct.batch
+            final_batches.append({
+                "batch_id": batch.batch_id,
+                "batch_name": batch.batch_name,
+                "title": batch.title,
+                "course_id": bct.course.course_id,
+                "course_name": bct.course.course_name,
+                "trainer_id": bct.trainer.employee_id,
+                "trainer_name": bct.trainer.full_name,
+                "type": "old"
             })
 
         return final_batches
@@ -1926,7 +1904,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             students=obj,
             is_archived=False,
             status=True
-        ).select_related("course")
+        ).prefetch_related("course")
 
         for nb in new_batches:
             if nb.course and nb.course.status == "Active" and not nb.course.is_archived:
@@ -1938,19 +1916,14 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         return CourseSerializer(unique_courses, many=True).data
 
     def get_attendance(self, obj):
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
+        trainer_courses = self.context.get("trainer_courses")
 
-        qs = obj.attendance_set.all().order_by('-date')
+        qs = obj.attendance_set.all()
 
-        # Only filter by trainer_courses if the user is a trainer
-        if user and user.user_type == "tutor":
-            trainer_courses = self.context.get("trainer_courses")  # courses assigned to the trainer
-            if trainer_courses:
-                qs = qs.filter(course_id__in=trainer_courses)
+        if trainer_courses:
+            qs = [a for a in qs if a.course_id in trainer_courses]
 
-        # Admins and superadmins see all logs, no filter
-        return AttendanceSerializer(qs, many=True).data if qs.exists() else []
+        return AttendanceSerializer(qs, many=True).data
 
     def get_school_student(self, obj):
         school = getattr(obj, 'school_student', None)
@@ -2023,6 +1996,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             qs, many=True,
             context={'request': self.context.get('request'), 'student': obj}
         ).data
+
 
 class StudentUpdateSerializer(serializers.ModelSerializer):
     school_student = School_StudentSerializer(required=False)

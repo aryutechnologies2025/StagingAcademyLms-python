@@ -2,14 +2,62 @@ from .models import *
 from PIL import Image, ImageDraw, ImageFont
 import os
 import re
+from django.core.cache import cache
+from rest_framework.response import Response
 import pytesseract
 from PIL import Image, ImageDraw, ImageFont
 from pytesseract import Output
 import random
+import hashlib
+import json
 import string
 from django.core.mail import send_mail, EmailMultiAlternatives
 from django.conf import settings
 
+
+
+def generate_cache_key(prefix, request, args, kwargs):
+
+    data = {
+        "prefix": prefix,
+        "path": request.path,
+        "query_params": request.query_params.dict(),
+        "args": args,
+        "kwargs": kwargs,
+    }
+
+    raw = json.dumps(data, sort_keys=True)
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def cache_api(prefix, timeout=120):
+
+    def decorator(func):
+        def wrapper(self, request, *args, **kwargs):
+
+            # Only cache GET requests
+            if request.method != "GET":
+                return func(self, request, *args, **kwargs)
+
+            # Build cache key
+            cache_key = generate_cache_key(prefix, request, args, kwargs)
+
+            # Fetch from Redis
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
+            # Run the function
+            response = func(self, request, *args, **kwargs)
+
+            # Cache successful responses
+            if response.status_code in (200, 201):
+                cache.set(cache_key, response.data, timeout)
+
+            return response
+
+        return wrapper
+    return decorator
 
 
 def generate_complex_otp(length=6):

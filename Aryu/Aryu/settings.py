@@ -53,6 +53,21 @@ INSTALLED_APPS = [
 
 ASGI_APPLICATION = "Aryu.asgi.application"
 
+# CACHES = {
+#     "default": {
+#         "BACKEND": "django.core.cache.backends.redis.RedisCache",
+#         "LOCATION": "redis://127.0.0.1:6379/1",
+#     }
+# }
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": "redis://aryuuser:Xc77D3f6@69.62.78.109:6379/1",
+        
+    }
+}
+
 # CHANNEL_LAYERS = {
 #     "default": {
 #         "BACKEND": "channels_redis.core.RedisChannelLayer",
@@ -62,18 +77,6 @@ ASGI_APPLICATION = "Aryu.asgi.application"
 #     },
 # }
 
-# CHANNEL_LAYERS = {
-#     "default": {
-#         "BACKEND": "channels_redis.core.RedisChannelLayer",
-#         "CONFIG": {
-#             "hosts": [{
-#                 "address": ("69.62.78.109", 6379),
-#                 "username": "aryuuser",
-#                 "password": "Xc77D3f6",
-#             }],
-#         },
-#     },
-# }
 
 CHANNEL_LAYERS = {
     "default": {
@@ -86,12 +89,10 @@ CHANNEL_LAYERS = {
     },
 }
 
-GZIP_MIN_LENGTH = 1024
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',  
     'django.middleware.security.SecurityMiddleware',
-    'django.middleware.gzip.GZipMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -101,6 +102,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
+    
 ]
 
 REST_FRAMEWORK = {
@@ -119,12 +121,14 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:8000",
     "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com"
 ]
 
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:8000",
     "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com"
     
 ]
 
@@ -132,8 +136,10 @@ ALLOWED_HOSTS = [
     "http://localhost:3000",
     "http://127.0.0.1:8000",
     "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com/=",
     "127.0.0.1",
 ]  # Allow all hosts for development; change in production
+
 
 RAZORPAY_KEY_ID = "rzp_test_RWUNL3DPw8Kmwk"
 RAZORPAY_KEY_SECRET = "EhBVN3O6o1BMc2sQANsXXlzI"

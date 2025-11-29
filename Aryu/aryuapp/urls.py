@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import include, path
 from .views import *
 from django.conf.urls.static import static
 
@@ -164,5 +164,4 @@ urlpatterns = [
    path('twilio/connect_customer', connect_customer, name='connect_customer'),
 
    ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-
 

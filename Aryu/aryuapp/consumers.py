@@ -1,5 +1,6 @@
 #consumers.py
 
+import asyncio
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
@@ -13,22 +14,62 @@ from django.conf import settings
 
 django.setup()
 # ------------------ CHAT CONSUMER ------------------
+import json
+from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
+from django.utils import timezone
+from .models import ChatRoom, Message
+from .serializer import MessageSerializer
+
+
 class ChatConsumer(AsyncWebsocketConsumer):
+
     async def connect(self):
         self.room_id = self.scope["url_route"]["kwargs"]["room_id"]
         self.room_group_name = f"chat_{self.room_id}"
 
-        # Preload room (reduces DB hits)
-        self.room = await database_sync_to_async(ChatRoom.objects.get)(id=self.room_id)
+        try:
+            self.room = await database_sync_to_async(ChatRoom.objects.get)(id=self.room_id)
+        except ChatRoom.DoesNotExist:
+            await self.close()
+            return
 
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
+
+        # Load last 30 messages
+        history, has_more = await self.get_messages(limit=30)
+
+        await self.send(json.dumps({
+            "success": True,
+            "message": "Messages fetched successfully",
+            "type": "history",
+            "data": history,
+            "has_more": has_more,
+        }))
 
     async def disconnect(self, close_code):
         await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
     async def receive(self, text_data):
         data = json.loads(text_data)
+        action = data.get("action")
+
+        # -------- Pagination (load more) ------------
+        if action == "load_more":
+            before_id = data.get("before_id")
+
+            messages = await self.get_messages(limit=30, before_id=before_id)
+
+            await self.send(json.dumps({
+                "success": True,
+                "message": "Messages fetched successfully",
+                "type": "history",
+                "data": messages
+            }))
+            return
+
+        # -------- Normal send message ---------------
         message = await self.create_message(data)
         serialized = MessageSerializer(message).data
 
@@ -41,30 +82,43 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
     async def chat_message(self, event):
-        await self.send(text_data=json.dumps({
+        await self.send(json.dumps({
+            "success": True,
             "type": "chat_message",
             "data": event["message"]
         }))
 
+    # -------- Pagination Logic ----------
+    @database_sync_to_async
+    def get_messages(self, limit=30, before_id=None):
+        qs = Message.objects.filter(room=self.room).order_by("-id")
+
+        if before_id:
+            qs = qs.filter(id__lt=before_id)
+
+        msgs = list(qs[:limit])
+        serialized = [MessageSerializer(m).data for m in msgs[::-1]]
+
+        # Check if more messages exist
+        has_more = Message.objects.filter(
+            room=self.room,
+            id__lt=(msgs[-1].id if msgs else 0)
+        ).exists()
+
+        return serialized, has_more
+
     @database_sync_to_async
     def create_message(self, data):
-        from django.db import connection
-
-        try:
-            msg = Message.objects.create(
-                room=self.room,
-                sender_type=data.get("sender_type"),
-                sender_id=data.get("sender_id"),
-                content=data.get("content", ""),
-                upload=data.get("upload"),
-                audio_file=data.get("audio_file"),
-                created_at=timezone.now(),
-            )
-            return msg
-
-        finally:
-            # ALWAYS close DB connection after ORM write
-            connection.close()
+        return Message.objects.create(
+            room=self.room,
+            sender_type=data.get("sender_type"),
+            sender_id=data.get("sender_id"),
+            content=data.get("content", ""),
+            upload=data.get("upload"),
+            audio_file=data.get("audio_file"),
+            created_at=timezone.now(),
+        )
+    
 
 # ------------------ NOTIFICATION CONSUMER ------------------
 class NotificationConsumer(AsyncWebsocketConsumer):
