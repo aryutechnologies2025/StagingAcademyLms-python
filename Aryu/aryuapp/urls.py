@@ -1,4 +1,4 @@
-from django.urls import include, path
+from django.urls import path
 from .views import *
 from django.conf.urls.static import static
 
@@ -162,6 +162,7 @@ urlpatterns = [
    path('leads/<int:pk>/call-logs', LeadViewSet.as_view({'get':'call_logs'})),
    path('leads/<int:pk>/call/<int:call_id>/notes', LeadViewSet.as_view({'post': 'add_call_notes'})),
    path('twilio/connect_customer', connect_customer, name='connect_customer'),
+   
 
    ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 

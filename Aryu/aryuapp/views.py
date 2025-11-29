@@ -47,11 +47,12 @@ from .mixins import *
 
 
 class SettingsPicsViewSet(viewsets.ModelViewSet):
+    login_required = False
     serializer_class = SettingsPicsSerializer
     queryset = Settings.objects.all().only("general_logo", "secondary_logo", "company_name")
 
-    authentication_classes = []   # ← Disable token auth
-    permission_classes = []       # ← Disable permission check
+    authentication_classes = ()   # ← Disable token auth
+    permission_classes = ()       # ← Disable permission check
 
     def list(self, request, *args, **kwargs):
 
