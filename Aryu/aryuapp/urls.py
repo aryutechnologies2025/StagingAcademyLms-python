@@ -155,6 +155,7 @@ urlpatterns = [
    path('chat/rooms/<int:room_id>/uyfvchky', MessageViewSet.as_view({'get': 'unread_messages'}), name='unread-count'),
    path('chating/<str:student_id>/eduthuko', ChatRoomViewSet.as_view({'get': 'student_chat_logs'}), name='chating-by-student'),
    path('alllogs', AdminfullLogViewSet.as_view({'get': 'list'})),
+   path("tickets/", StudentTicketViewSet.as_view(), name="tickets"),
    path('leads', LeadViewSet.as_view({'get':'list','post':'create'})),
    path('leads/<int:pk>', LeadViewSet.as_view({'get':'retrieve','put':'update','patch':'partial_update'})),
    path('leads/<int:pk>/archive', LeadViewSet.as_view({'patch':'is_archived'})),
