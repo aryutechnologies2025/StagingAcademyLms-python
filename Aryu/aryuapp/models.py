@@ -1265,6 +1265,40 @@ class Message(models.Model):
 
     def __str__(self):
         return f"{self.sender_type}({self.sender_id}): {self.content[:20]}"
+    
+class StudentTicket(models.Model):
+    ticket_id = models.AutoField(primary_key=True)
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="tickets")
+    subject = models.CharField(max_length=255)
+    message = models.TextField()
+    status = models.CharField(max_length=20, default="new")  # open / in_progress / closed
+    handled_by_trainer = models.ForeignKey(
+        Trainer, on_delete=models.SET_NULL, null=True, blank=True, related_name="handled_tickets"
+    )
+    handled_by_superadmin = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="superadmin_handled_tickets"
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def __str__(self):
+        return f"Ticket #{self.ticket_id}"
+
+
+class TicketReply(models.Model):
+    reply_id = models.AutoField(primary_key=True)
+    ticket = models.ForeignKey(StudentTicket, on_delete=models.CASCADE, related_name="replies")
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True)
+    trainer = models.ForeignKey(Trainer, on_delete=models.SET_NULL, null=True, blank=True)
+    super_admin = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    message = models.TextField()
+    created_at = models.DateTimeField(default=timezone.now)
+
+
+class TicketAttachment(models.Model):
+    attachment_id = models.AutoField(primary_key=True)
+    ticket = models.ForeignKey(StudentTicket, on_delete=models.CASCADE, related_name="attachments")
+    file = models.FileField(upload_to='tickets/')
+    created_at = models.DateTimeField(default=timezone.now)
 
 class DeactivationLog(models.Model):
     student = models.ForeignKey('Student', on_delete=models.CASCADE)

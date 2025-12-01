@@ -4365,6 +4365,197 @@ class StudentListAPIView(viewsets.ViewSet):
                 "message": str(e)
             }, status=200)
 
+class StudentTicketViewSet(APIView):
+
+    def base_qs(self):
+        reply_qs = TicketReply.objects.select_related(
+            "student", "trainer", "super_admin"
+        ).order_by("created_at")
+
+        attachment_qs = TicketAttachment.objects.all()
+
+        return StudentTicket.objects.select_related(
+            "student", "handled_by_trainer", "handled_by_superadmin"
+        ).prefetch_related(
+            Prefetch("replies", queryset=reply_qs, to_attr="prefetched_replies"),
+            Prefetch("attachments", queryset=attachment_qs, to_attr="prefetched_attachments")
+        ).annotate(
+            replies_count=Count("replies")
+        )
+
+    def ticket_scope(self, user):
+        ut = user.user_type
+
+        if ut == "super_admin":
+            admin_ids = Trainer.objects.filter(
+                created_by=user.id,
+                created_by_type="super_admin",
+                user_type="admin"
+            ).values_list("trainer_id", flat=True)
+
+            return Q(student__created_by=user.id, student__created_by_type="super_admin") | \
+                   Q(student__created_by__in=admin_ids, student__created_by_type="admin")
+
+        elif ut == "admin":
+            admin_obj = Trainer.objects.filter(username=user.username).first()
+            super_admin_id = admin_obj.created_by if admin_obj and admin_obj.created_by_type == "super_admin" else None
+
+            return Q(student__created_by=user.trainer_id, student__created_by_type="admin") | \
+                   Q(student__created_by=super_admin_id, student__created_by_type="super_admin")
+
+        elif ut == "student":
+            return Q(student__registration_id=user.username)
+
+        return Q(student__created_by=-1)
+
+
+    def dispatch(self, request, *args, **kwargs):
+        """
+        Overrides dispatch to route everything
+        based on query params instead of multiple URLs.
+        """
+
+        # --- GET requests ---
+        if request.method == "GET":
+
+            # /tickets/?type=my
+            if request.GET.get("type") == "my":
+                return self.student_list(request)
+
+            # /tickets/?type=all
+            if request.GET.get("type") == "all":
+                return self.admin_all(request)
+
+            # /tickets/?ticket_id=10
+            if request.GET.get("ticket_id"):
+                return self.ticket_detail(request)
+
+            return Response({"success": False, "message": "Invalid GET request"}, status=200)
+
+        # --- POST requests ---
+        if request.method == "POST":
+
+            # /tickets/?reply_to=10
+            if request.GET.get("reply_to"):
+                return self.reply(request)
+
+            # /tickets/?close=10
+            if request.GET.get("close"):
+                return self.close_ticket(request)
+
+            # Default POST → Create ticket
+            return self.create(request)
+
+        return Response({"success": False, "message": "Invalid request"}, status=200)
+
+    # ---------------------------- 1. Create Ticket ----------------------------
+    def create(self, request):
+        user = request.user
+
+        student = Student.objects.filter(registration_id=user.username).first()
+        if not student:
+            return Response({"success": False, "message": "Student not found"}, status=200)
+
+        subject = request.data.get("subject")
+        message = request.data.get("message")
+
+        if not subject or not message:
+            return Response({"success": False, "message": "Subject & Message required"}, status=200)
+
+        ticket = StudentTicket.objects.create(student=student, subject=subject, message=message)
+
+        # Attachments
+        for f in request.FILES.getlist("attachments", []):
+            TicketAttachment.objects.create(ticket=ticket, file=f)
+
+        ticket = self.base_qs().filter(ticket_id=ticket.ticket_id).first()
+
+        return Response({
+            "success": True,
+            "message": "Ticket created",
+            "data": StudentTicketSerializer(ticket).data
+        }, status=200)
+
+    # ---------------------------- 2. Student My Tickets ----------------------------
+    def student_list(self, request):
+        user = request.user
+
+        qs = self.base_qs().filter(student__registration_id=user.username).order_by("-ticket_id")
+
+        return Response({"success": True, "tickets": StudentTicketSerializer(qs, many=True).data}, status=200)
+
+    # ---------------------------- 3. Admin / SA All Tickets ----------------------------
+    def admin_all(self, request):
+        user = request.user
+        if user.user_type not in ("admin", "super_admin"):
+            return Response({"success": False, "message": "Access denied"}, status=200)
+
+        filt = self.ticket_scope(user)
+        qs = self.base_qs().filter(filt).order_by("-ticket_id")
+
+        return Response({"success": True, "tickets": StudentTicketSerializer(qs, many=True).data}, status=200)
+
+    # ---------------------------- 4. Ticket Details ----------------------------
+    def ticket_detail(self, request):
+        ticket_id = request.GET.get("ticket_id")
+
+        ticket = self.base_qs().filter(ticket_id=ticket_id).first()
+
+        if not ticket:
+            return Response({"success": False, "message": "Ticket not found"}, status=200)
+
+        return Response({"success": True, "data": TicketDetailSerializer(ticket).data}, status=200)
+
+    # ---------------------------- 5. Reply ----------------------------
+    def reply(self, request):
+        ticket_id = request.GET.get("reply_to")
+        ticket = StudentTicket.objects.filter(ticket_id=ticket_id).first()
+
+        if not ticket:
+            return Response({"success": False, "message": "Ticket not found"}, status=200)
+
+        msg = request.data.get("message")
+        if not msg:
+            return Response({"success": False, "message": "Message required"}, status=200)
+
+        user = request.user
+
+        # Student replying
+        if user.user_type == "student":
+            if ticket.student.registration_id != user.username:
+                return Response({"success": False, "message": "Unauthorized"}, status=200)
+            TicketReply.objects.create(ticket=ticket, message=msg, student=ticket.student)
+
+        # Admin
+        elif user.user_type == "admin":
+            trainer = Trainer.objects.filter(username=user.username).first()
+            TicketReply.objects.create(ticket=ticket, message=msg, trainer=trainer)
+            ticket.handled_by_trainer = trainer
+            ticket.save()
+
+        # Super Admin
+        elif user.user_type == "super_admin":
+            TicketReply.objects.create(ticket=ticket, message=msg, super_admin=user)
+            ticket.handled_by_superadmin = user
+            ticket.save()
+
+        ticket.status = "in_progress"
+        ticket.save()
+
+        return Response({"success": True, "message": "Reply added"}, status=200)
+
+    # ---------------------------- 6. Close Ticket ----------------------------
+    def close_ticket(self, request):
+        ticket_id = request.GET.get("close")
+        ticket = StudentTicket.objects.filter(ticket_id=ticket_id).first()
+
+        if not ticket:
+            return Response({"success": False, "message": "Ticket not found"}, status=200)
+
+        ticket.status = "closed"
+        ticket.save()
+
+        return Response({"success": True, "message": "Ticket closed"}, status=200)
 
 class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
     queryset = Attendance.objects.all()

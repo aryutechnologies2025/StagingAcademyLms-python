@@ -3985,6 +3985,59 @@ class MessageSerializer(serializers.ModelSerializer):
             return 'https://aylms.aryuprojects.com/api' + obj.audio_file.url
         return None
 
+class TicketAttachmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TicketAttachment
+        fields = ["attachment_id", "file", "created_at"]
+
+
+class TicketReplySerializer(serializers.ModelSerializer):
+    sender_type = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = TicketReply
+        fields = [
+            "reply_id",
+            "sender_type",
+            "message",
+            "created_at",
+        ]
+
+
+class StudentTicketSerializer(serializers.ModelSerializer):
+    student_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentTicket
+        fields = [
+            "ticket_id",
+            "subject",
+            "message",
+            "status",
+            "student_name",
+            "created_at",
+        ]
+
+    def get_student_name(self, obj):
+        return obj.student.first_name + " " + obj.student.last_name
+
+
+class TicketDetailSerializer(serializers.ModelSerializer):
+    replies = TicketReplySerializer(many=True)
+    attachments = TicketAttachmentSerializer(many=True)
+
+    class Meta:
+        model = StudentTicket
+        fields = [
+            "ticket_id",
+            "subject",
+            "message",
+            "status",
+            "created_at",
+            "replies",
+            "attachments"
+        ]
+
 class UserPresenceSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserPresence
