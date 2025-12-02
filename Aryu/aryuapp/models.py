@@ -1354,11 +1354,16 @@ class PaymentGateway(models.Model):
 
 class PaymentTransaction(models.Model):
 
-    student = models.ForeignKey(
-        Student, on_delete=models.CASCADE, related_name="transactions"
-    )
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="transactions")
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="course_transactions", null=True, blank=True)
+
     gateway = models.ForeignKey(PaymentGateway, on_delete=models.SET_NULL, null=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    
+    # ADD THIS
+    discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    total_after_discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
     currency = models.CharField(max_length=10, null=True, blank=True)
     payment_status = models.CharField(max_length=20, null=True, blank=True)
     transaction_id = models.CharField(max_length=100, blank=True, null=True)
@@ -1367,6 +1372,7 @@ class PaymentTransaction(models.Model):
     metadata = models.JSONField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
 
     def __str__(self):
         return f"{self.student} - {self.amount} {self.currency} ({self.payment_status})"
@@ -1379,21 +1385,22 @@ class PaymentLog(models.Model):
     received_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Log for {self.transaction_id} ({self.event_type})"
+        return f"Log for {self.transaction.transaction_id} ({self.event_type})"
 
 class PaymentEMI(models.Model):
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="emi_plans")
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="emi_plans", null=True, blank=True)
+
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
-    months = models.PositiveIntegerField()  # 1 = full payment, 2 = two split, etc.
+    months = models.PositiveIntegerField()
     created_at = models.DateTimeField(auto_now_add=True)
+
 
     def __str__(self):
         return f"{self.student.student_id} - {self.months} months"
     
     def create_installments(self):
-
         from datetime import date, timedelta
-        from math import ceil
 
         monthly_amount = self.total_amount / self.months
         today = date.today()
@@ -1404,23 +1411,27 @@ class PaymentEMI(models.Model):
             installments.append(
                 PaymentEMIInstallment(
                     emi_plan=self,
+                    course=self.course,                 # NEW IMPORTANT LINE
                     amount=monthly_amount,
                     due_date=due_date
                 )
             )
 
         PaymentEMIInstallment.objects.bulk_create(installments)
-
         return installments
+
 
 class PaymentEMIInstallment(models.Model):
     emi_plan = models.ForeignKey(PaymentEMI, on_delete=models.CASCADE, related_name="installments")
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, null=True, blank=True)
+
     due_date = models.DateField()
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     paid = models.BooleanField(default=False)
     paid_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     payment = models.ForeignKey(PaymentTransaction, on_delete=models.SET_NULL, null=True, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
+
 
     def __str__(self):
         return f"Installment for {self.emi_plan.student.student_id} - {self.amount}"
