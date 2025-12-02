@@ -299,6 +299,7 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentTransaction
         fields = [
+            "id",
             "transaction_id",
             "order_id",
             "amount",
@@ -312,13 +313,16 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
 
 class StudentPaymentSummarySerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
-    course_name = serializers.SerializerMethodField()
     registration_id = serializers.SerializerMethodField()
+
+    course_name = serializers.SerializerMethodField()
     total_course_fee = serializers.SerializerMethodField()
     paid_amount = serializers.SerializerMethodField()
     remaining_amount = serializers.SerializerMethodField()
+
     transactions = PaymentTransactionDetailSerializer(many=True, read_only=True)
     emi_plans = serializers.SerializerMethodField()
+
     remaining_emi_count = serializers.SerializerMethodField()
     next_due_emi_date = serializers.SerializerMethodField()
     next_due_emi_amount = serializers.SerializerMethodField()
@@ -328,6 +332,7 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Student
         fields = [
+            
             "student_name",
             "registration_id",
             "student_id",
@@ -335,10 +340,12 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
             "contact_no",
             "current_address",
             "joining_date",
+
             "course_name",
             "total_course_fee",
             "paid_amount",
             "remaining_amount",
+
             "transactions",
             "remaining_emi_count",
             "emi_plans",
@@ -346,15 +353,81 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
             "next_due_emi_amount",
             "total_pending_emi_amount",
             "overdue_emi_list",
-            
         ]
+
+    # ----------------------------- BASIC DETAILS -----------------------------
 
     def get_student_name(self, obj):
         return f"{obj.first_name} {obj.last_name}".strip()
-    
+
     def get_registration_id(self, obj):
         return obj.registration_id
+
+    # ------------------------------- TOTAL COURSE FEE ------------------------
+
+    def get_total_course_fee(self, obj):
+        """
+        Get course fee directly from the course attached to the latest payment.
+        """
+        last_tx = (
+            obj.transactions
+            .filter(payment_status="Success")
+            .select_related("course")
+            .order_by("-created_at")
+            .first()
+        )
+
+        if last_tx and last_tx.course:
+            return last_tx.course.fee
+
+        return 0
     
+    def get_course_name(self, obj):
+        """
+        Get the course name from the latest successful payment transaction.
+        """
+        last_tx = (
+            obj.transactions
+            .filter(payment_status="Success")
+            .select_related("course")
+            .order_by("-created_at")
+            .first()
+        )
+
+        if last_tx and last_tx.course:
+            return last_tx.course.course_name
+
+        return None
+
+    # ------------------------ PAYMENT SUMMARY (All Transactions) -------------
+
+    def get_paid_amount(self, obj):
+        """
+        Total paid across all successful payment transactions.
+        """
+        paid = obj.transactions.filter(payment_status="Success").aggregate(
+            total=models.Sum("amount")
+        )["total"]
+
+        return paid or 0
+
+    def get_remaining_amount(self, obj):
+        return self.get_total_course_fee(obj) - self.get_paid_amount(obj)
+
+    # ------------------------------ EMI HELPERS ------------------------------
+
+    def _all_installments(self, obj):
+        """
+        Return all installments across all EMI plans.
+        """
+        emis = obj.emi_plans.all().prefetch_related("installments")
+        installments = []
+        for emi in emis:
+            installments.extend(list(emi.installments.all()))
+        return installments
+
+    # ------------------------------ EMI SUMMARY ------------------------------
+
     def get_emi_plans(self, obj):
         return [
             {
@@ -366,122 +439,45 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
                         "amount": ins.amount,
                         "paid": ins.paid,
                         "paid_amount": ins.paid_amount,
-                        "paid_at": ins.paid_at
+                        "paid_at": ins.paid_at,
                     }
                     for ins in emi.installments.all()
-                ]
+                ],
             }
             for emi in obj.emi_plans.all()
         ]
-    
-    def get_course_name(self, obj):
-        course_names = set()
 
-        old_courses = Course.objects.filter(
-            batchcoursetrainer__student=obj,
-            batchcoursetrainer__course__is_archived=False,
-            batchcoursetrainer__course__status__iexact='Active'
-        ).values_list("course_name", flat=True)
-
-        for name in old_courses:
-            course_names.add(name)
-
-        new_batches = NewBatch.objects.filter(
-            students=obj,
-            is_archived=False,
-            status=True
-        ).select_related("course")
-
-        for nb in new_batches:
-            if nb.course and nb.course.status == "Active" and not nb.course.is_archived:
-                course_names.add(nb.course.course_name)
-
-        # Return unique list of course names
-        return list(course_names)
-
-    def get_total_course_fee(self, obj):
-        courses = Course.objects.filter(
-            batchcoursetrainer__student=obj,
-            is_archived=False,
-            status__iexact='Active'
-        ).distinct()
-
-        total_fee = sum(course.fee for course in courses)
-
-        # NEW BATCH SUPPORT
-        new_batches = NewBatch.objects.filter(
-            students=obj,
-            is_archived=False,
-            status=True
-        ).select_related("course")
-
-        for nb in new_batches:
-            if nb.course and nb.course.status == "Active" and not nb.course.is_archived:
-                total_fee += nb.course.fee
-
-        return total_fee
-    
     def get_remaining_emi_count(self, obj):
-        installments = self._all_installments(obj)
-        return sum(1 for ins in installments if not ins.paid)
-    
-    def get_paid_amount(self, obj):
-        # Sum of all successful payments
-        paid = obj.transactions.filter(payment_status='Success').aggregate(
-            total_paid=models.Sum('amount')
-        )['total_paid'] or 0
-        return paid
-
-    def get_remaining_amount(self, obj):
-        return self.get_total_course_fee(obj) - self.get_paid_amount(obj)
-    
-    def _all_installments(self, obj):
-        """Helper function: return all installments for all EMI plans."""
-        emis = obj.emi_plans.all().prefetch_related("installments")
-        installments = []
-        for emi in emis:
-            installments.extend(list(emi.installments.all()))
-        return installments
+        return sum(1 for ins in self._all_installments(obj) if not ins.paid)
 
     def get_next_due_emi_date(self, obj):
-        installments = self._all_installments(obj)
-        pending = [ins for ins in installments if not ins.paid]
-
+        pending = [ins for ins in self._all_installments(obj) if not ins.paid]
         if not pending:
             return None
-
-        next_due = min(pending, key=lambda ins: ins.due_date)
-        return next_due.due_date
+        return min(pending, key=lambda ins: ins.due_date).due_date
 
     def get_next_due_emi_amount(self, obj):
-        installments = self._all_installments(obj)
-        pending = [ins for ins in installments if not ins.paid]
-
+        pending = [ins for ins in self._all_installments(obj) if not ins.paid]
         if not pending:
             return None
-
-        next_due = min(pending, key=lambda ins: ins.due_date)
-        return next_due.amount
+        return min(pending, key=lambda ins: ins.due_date).amount
 
     def get_total_pending_emi_amount(self, obj):
-        installments = self._all_installments(obj)
-        return sum(ins.amount for ins in installments if not ins.paid)
+        return sum(ins.amount for ins in self._all_installments(obj) if not ins.paid)
 
     def get_overdue_emi_list(self, obj):
         today = timezone.now().date()
-        installments = self._all_installments(obj)
-
         overdue = [
             {
                 "due_date": ins.due_date,
                 "amount": ins.amount,
-                "days_overdue": (today - ins.due_date).days
+                "days_overdue": (today - ins.due_date).days,
             }
-            for ins in installments
+            for ins in self._all_installments(obj)
             if not ins.paid and ins.due_date < today
         ]
-
         return overdue
+
 
 class PaymentLogSerializer(serializers.ModelSerializer):
     class Meta:
@@ -495,8 +491,11 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
         model = PaymentTransaction
         fields = [
             "student",
+            "course",
             "gateway",
             "amount",
+            "discount",
+            "total_after_discount",
             "currency",
             "payment_status",
             "transaction_id",
@@ -505,6 +504,7 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
             "metadata",
             "emi_installment_id"
         ]
+
 
     def validate(self, attrs):
         installment_id = attrs.get("emi_installment_id")
@@ -531,17 +531,24 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
         metadata = validated_data.get("metadata", {})
         emi_installment_id = validated_data.pop("emi_installment_id", None)
 
-        # -------------------------------
-        # 1️⃣ CREATE PAYMENT TRANSACTION
-        # -------------------------------
+        student = validated_data["student"]
+        course = validated_data["course"]
+
+        amount = validated_data["amount"]
+        discount = validated_data.get("discount", 0)
+
+        validated_data["total_after_discount"] = amount - discount
+
         transaction = super().create(validated_data)
 
-        # -------------------------------
-        # 2️⃣ HANDLE EMI PAYMENT (Paying an installment)
-        # -------------------------------
         if emi_installment_id:
-            installment = PaymentEMIInstallment.objects.get(pk=emi_installment_id)
+            installment = PaymentEMIInstallment.objects.select_related("emi_plan").get(pk=emi_installment_id)
 
+            # Validate installment belongs to same course
+            if installment.emi_plan.course_id != course.id:
+                raise serializers.ValidationError("This EMI installment does not belong to this course.")
+
+            # Mark installment as paid
             installment.paid = True
             installment.paid_amount = transaction.amount
             installment.payment = transaction
@@ -550,9 +557,6 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
 
             return transaction
 
-        # -------------------------------
-        # 3️⃣ HANDLE NEW EMI PLAN CREATION
-        # -------------------------------
         emi_data = metadata.get("emi")
 
         if emi_data:
@@ -562,18 +566,18 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
             if not months or not total_fee:
                 raise serializers.ValidationError("Invalid EMI metadata provided.")
 
-            # Create EMI plan
+            # Create EMI plan for THIS COURSE ONLY
             emi = PaymentEMI.objects.create(
-                student=validated_data["student"],
+                student=student,
+                course=course,                 # NEW: Important link to course
                 total_amount=total_fee,
                 months=months
             )
 
-            # create installments
+            # Create installments
             installments = emi.create_installments()
 
-            # OPTIONAL: assign this payment to FIRST installment
-            # (Only if amount matches first installment)
+            # If first installment equals payment amount → Auto mark first as paid
             if installments and float(installments[0].amount) == float(transaction.amount):
                 first = installments[0]
                 first.paid = True
@@ -582,7 +586,10 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
                 first.paid_at = timezone.now()
                 first.save()
 
+        # Done
         return transaction
+
+
 
 class StripePaymentSerializer(serializers.ModelSerializer):
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)

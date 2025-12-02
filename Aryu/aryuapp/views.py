@@ -2984,7 +2984,11 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         students_qs = Student.objects.filter(
             transactions__isnull=False,
             is_archived=False
-        ).prefetch_related("transactions").distinct()
+        ).prefetch_related(
+            Prefetch("transactions", queryset=PaymentTransaction.objects.select_related("course", "gateway")),
+            Prefetch("emi_plans", queryset=PaymentEMI.objects.select_related("course").prefetch_related("installments"))
+        )
+
 
         # ---------------- Apply hierarchy filters ----------------
         if user_type == "admin" and user_created_id:
