@@ -1280,9 +1280,20 @@ class StudentTicket(models.Model):
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name="superadmin_handled_tickets"
     )
     created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by_type = models.ForeignKey(ContentType, null=True, blank=True, on_delete=models.SET_NULL)
+    updated_by_id = models.PositiveIntegerField(null=True, blank=True)
+    updated_by = GenericForeignKey('updated_by_type', 'updated_by_id')
 
     def __str__(self):
         return f"Ticket #{self.ticket_id}"
+    
+    def save(self, *args, **kwargs):
+        # Auto-set updated_by from current user
+        current_user = kwargs.pop('current_user', None)
+        if current_user:
+            self.updated_by = current_user
+        super().save(*args, **kwargs)
 
 
 class TicketReply(models.Model):

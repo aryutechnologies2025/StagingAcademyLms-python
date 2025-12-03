@@ -3994,6 +3994,7 @@ class MessageSerializer(serializers.ModelSerializer):
 
 class TicketAttachmentSerializer(serializers.ModelSerializer):
     file = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     class Meta:
         model = TicketAttachment
         fields = ["attachment_id", "file", "created_at"]
@@ -4027,25 +4028,46 @@ class TicketReplySerializer(serializers.ModelSerializer):
         return "Unknown"
 
 # serializers.py
+# serializers.py
 class StudentTicketSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
-    attachments = serializers.SerializerMethodField()
-    replies = serializers.SerializerMethodField()
+    updated_by_name = serializers.SerializerMethodField()
+    updated_by_type = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
+    updated_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
 
     class Meta:
         model = StudentTicket
         fields = [
-            "ticket_id",
-            "subject",
-            "message",
-            "status",
-            "priority",
-            "student_name",
-            "created_at",
-            "attachments",
-            "replies",
+            "ticket_id", "subject", "message", "status", "priority",
+            "student_name", "created_at", "updated_at",
+            "updated_by_name", "updated_by_type", "attachments", "replies"
         ]
+
+    def get_updated_by_name(self, obj):
+        if not obj.updated_by:
+            return "System"
+        
+        # Handle different user types
+        if hasattr(obj.updated_by, 'student_id'):  # Student
+            return f"{obj.updated_by.first_name} {obj.updated_by.last_name}".strip()
+        elif hasattr(obj.updated_by, 'trainer_id'):  # Trainer/Admin
+            return getattr(obj.updated_by, 'full_name', obj.updated_by.username)
+        elif hasattr(obj.updated_by, 'is_superuser') or getattr(obj.updated_by, 'user_type') == 'super_admin':
+            return "Super Admin"
+        else:
+            return obj.updated_by.get_full_name() or obj.updated_by.username
+
+    def get_updated_by_type(self, obj):
+        if not obj.updated_by:
+            return "system"
+        if hasattr(obj.updated_by, 'student_id'):
+            return "student"
+        if hasattr(obj.updated_by, 'trainer_id'):
+            return "admin"
+        if getattr(obj.updated_by, 'user_type') == 'super_admin':
+            return "super_admin"
+        return "unknown"
 
     def get_student_name(self, obj):
         return f"{obj.student.first_name} {obj.student.last_name}".strip()

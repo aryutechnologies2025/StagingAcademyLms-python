@@ -4448,7 +4448,8 @@ class StudentTicketViewSet(APIView):
             subject=subject,
             message=message,
             priority=priority,
-            status="new"
+            status="new",
+            updated_by=request.user
         )
 
         # Handle attachments
@@ -4506,7 +4507,15 @@ class StudentTicketViewSet(APIView):
 
         # Update ticket status
         ticket.status = "in_progress"
-        ticket.save(update_fields=["status", "handled_by_trainer", "handled_by_superadmin"])
+        ticket.updated_by = request.user
+        ticket.save(update_fields=[
+            "status",
+            "handled_by_trainer",
+            "handled_by_superadmin",
+            "updated_by",           # GenericForeignKey fields
+            "updated_by_type",      # Auto-filled by Django
+            "updated_by_id"         # Auto-filled by Django
+        ])
 
         # Serialize and return the new reply
         serialized_reply = TicketReplySerializer(reply, context={'request': request}).data
@@ -4529,7 +4538,13 @@ class StudentTicketViewSet(APIView):
             return Response({"success": False, "message": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
 
         ticket.status = "closed"
-        ticket.save(update_fields=["status"])
+        ticket.updated_by = request.user
+        ticket.save(update_fields=[
+            "status",
+            "updated_by",
+            "updated_by_type",
+            "updated_by_id"
+        ])
         return Response({"success": True, "message": "Ticket closed successfully"}, status=status.HTTP_200_OK)
 
     # Admin scope
@@ -4579,6 +4594,16 @@ class StudentTicketViewSet(APIView):
 
         reply.message = new_message
         reply.save(update_fields=["message"])
+
+        # Also update the parent ticket's updated_by
+        ticket = reply.ticket
+        ticket.updated_by = request.user  # Who edited the reply
+
+        ticket.save(update_fields=[
+            "updated_by",
+            "updated_by_type",
+            "updated_by_id"
+        ])
 
         return Response({
             "success": True,
