@@ -4351,9 +4351,6 @@ class StudentListAPIView(viewsets.ViewSet):
             
             all_batches = list({b["batch_id"]: b for b in all_batches}.values())
 
-            # ===============================================================
-            # FINAL RESPONSE
-            # ===============================================================
             return Response({
                 "success": True,
                 "students": response_data,
@@ -4369,197 +4366,226 @@ class StudentListAPIView(viewsets.ViewSet):
                 "message": str(e)
             }, status=200)
 
+
 class StudentTicketViewSet(APIView):
+    permission_classes = [IsAuthenticated]
 
-    def base_qs(self):
-        reply_qs = TicketReply.objects.select_related(
-            "student", "trainer", "super_admin"
-        ).order_by("created_at")
-
-        attachment_qs = TicketAttachment.objects.all()
-
+    # Optimized base queryset with prefetch
+    def get_queryset(self):
         return StudentTicket.objects.select_related(
             "student", "handled_by_trainer", "handled_by_superadmin"
         ).prefetch_related(
-            Prefetch("replies", queryset=reply_qs, to_attr="prefetched_replies"),
-            Prefetch("attachments", queryset=attachment_qs, to_attr="prefetched_attachments")
-        ).annotate(
-            replies_count=Count("replies")
-        )
+            Prefetch("replies__student"),
+            Prefetch("replies__trainer"),
+            Prefetch("replies__super_admin"),
+            "attachments"
+        ).annotate(replies_count=Count("replies"))
 
-    def ticket_scope(self, user):
-        ut = user.user_type
+    # GET: List or Detail
+    def get(self, request):
+        user_type = getattr(request.user, "user_type", None)
 
-        if ut == "super_admin":
-            admin_ids = Trainer.objects.filter(
-                created_by=user.id,
-                created_by_type="super_admin",
-                user_type="admin"
-            ).values_list("trainer_id", flat=True)
+        # My Tickets
+        if request.query_params.get("type") == "iron_man":
+            if user_type != "student":
+                return Response({"success": False, "message": "Access denied"}, status=status.HTTP_403_FORBIDDEN)
+            tickets = self.get_queryset().filter(student__student_id=request.user.student_id).order_by("-ticket_id")
+            return Response({"success": True, "tickets": StudentTicketSerializer(tickets, many=True, context={'request': request}).data})
 
-            return Q(student__created_by=user.id, student__created_by_type="super_admin") | \
-                   Q(student__created_by__in=admin_ids, student__created_by_type="admin")
+        # All Tickets (Admin / SuperAdmin)
+        if request.query_params.get("type") == "wonder_women":
+            if user_type not in ("admin", "super_admin"):
+                return Response({"success": False, "message": "Access denied"}, status=status.HTTP_403_FORBIDDEN)
+            scope = self.get_admin_scope(request.user)
+            tickets = self.get_queryset().filter(scope).order_by("-ticket_id")
+            return Response({"success": True, "tickets": StudentTicketSerializer(tickets, many=True, context={'request': request}).data})
 
-        elif ut == "admin":
-            admin_obj = Trainer.objects.filter(username=user.username).first()
-            super_admin_id = admin_obj.created_by if admin_obj and admin_obj.created_by_type == "super_admin" else None
+        # Ticket Detail
+        if request.query_params.get("natasha"):
+            try:
+                ticket_id = int(request.query_params["natasha"])
+            except ValueError:
+                return Response({"success": False, "message": "Invalid ticket_id"}, status=status.HTTP_400_BAD_REQUEST)
 
-            return Q(student__created_by=user.trainer_id, student__created_by_type="admin") | \
-                   Q(student__created_by=super_admin_id, student__created_by_type="super_admin")
+            ticket = self.get_queryset().filter(ticket_id=ticket_id).first()
+            if not ticket:
+                return Response({"success": False, "message": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"success": True, "data": TicketDetailSerializer(ticket).data})
 
-        elif ut == "student":
-            return Q(student__registration_id=user.username)
+        return Response({"success": False, "message": "Invalid request"}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Q(student__created_by=-1)
+    # POST: Create, Reply, or Close
+    def post(self, request):
+        # Reply to ticket
+        if request.query_params.get("bat_man"):
+            return self.reply_to_ticket(request)
 
+        # Close ticket
+        if request.query_params.get("close"):
+            return self.close_ticket(request)
 
-    def dispatch(self, request, *args, **kwargs):
-        """
-        Overrides dispatch to route everything
-        based on query params instead of multiple URLs.
-        """
+        # Default: Create new ticket
+        return self.create_ticket(request)
 
-        # --- GET requests ---
-        if request.method == "GET":
+    # Create new ticket
+    def create_ticket(self, request):
+        if getattr(request.user, "user_type", None) != "student":
+            return Response({"success": False, "message": "Only students can create tickets"}, status=status.HTTP_403_FORBIDDEN)
 
-            # /tickets/?type=my
-            if request.GET.get("type") == "my":
-                return self.student_list(request)
-
-            # /tickets/?type=all
-            if request.GET.get("type") == "all":
-                return self.admin_all(request)
-
-            # /tickets/?ticket_id=10
-            if request.GET.get("ticket_id"):
-                return self.ticket_detail(request)
-
-            return Response({"success": False, "message": "Invalid GET request"}, status=200)
-
-        # --- POST requests ---
-        if request.method == "POST":
-
-            # /tickets/?reply_to=10
-            if request.GET.get("reply_to"):
-                return self.reply(request)
-
-            # /tickets/?close=10
-            if request.GET.get("close"):
-                return self.close_ticket(request)
-
-            # Default POST → Create ticket
-            return self.create(request)
-
-        return Response({"success": False, "message": "Invalid request"}, status=200)
-
-    # ---------------------------- 1. Create Ticket ----------------------------
-    def create(self, request):
-        user = request.user
-
-        student = Student.objects.filter(registration_id=user.username).first()
+        student = Student.objects.filter(student_id=getattr(request.user, "student_id", None)).first()
         if not student:
-            return Response({"success": False, "message": "Student not found"}, status=200)
+            return Response({"success": False, "message": "Student not found"}, status=status.HTTP_400_BAD_REQUEST)
 
-        subject = request.data.get("subject")
-        message = request.data.get("message")
+        subject = request.data.get("subject", "").strip()
+        message = request.data.get("message", "").strip()
+        priority = request.data.get("priority", "medium").lower()
 
         if not subject or not message:
-            return Response({"success": False, "message": "Subject & Message required"}, status=200)
+            return Response({"success": False, "message": "Subject and message are required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        ticket = StudentTicket.objects.create(student=student, subject=subject, message=message)
+        ticket = StudentTicket.objects.create(
+            student=student,
+            subject=subject,
+            message=message,
+            priority=priority,
+            status="new"
+        )
 
-        # Attachments
-        for f in request.FILES.getlist("attachments", []):
-            TicketAttachment.objects.create(ticket=ticket, file=f)
+        # Handle attachments
+        for file in request.FILES.getlist("attachments"):
+            TicketAttachment.objects.create(ticket=ticket, file=file)
 
-        ticket = self.base_qs().filter(ticket_id=ticket.ticket_id).first()
+        ticket = self.get_queryset().get(pk=ticket.pk)
 
         return Response({
             "success": True,
-            "message": "Ticket created",
-            "data": StudentTicketSerializer(ticket).data
-        }, status=200)
+            "message": "Ticket created successfully",
+            "data": StudentTicketSerializer(ticket, context={'request': request}).data
+        }, status=status.HTTP_201_CREATED)
 
-    # ---------------------------- 2. Student My Tickets ----------------------------
-    def student_list(self, request):
-        user = request.user
+    # Reply to ticket
+    def reply_to_ticket(self, request):
+        try:
+            ticket_id = int(request.query_params["bat_man"])
+        except (ValueError, TypeError):
+            return Response({"success": False, "message": "Invalid reply_to"}, status=status.HTTP_400_BAD_REQUEST)
 
-        qs = self.base_qs().filter(student__registration_id=user.username).order_by("-ticket_id")
-
-        return Response({"success": True, "tickets": StudentTicketSerializer(qs, many=True).data}, status=200)
-
-    # ---------------------------- 3. Admin / SA All Tickets ----------------------------
-    def admin_all(self, request):
-        user = request.user
-        if user.user_type not in ("admin", "super_admin"):
-            return Response({"success": False, "message": "Access denied"}, status=200)
-
-        filt = self.ticket_scope(user)
-        qs = self.base_qs().filter(filt).order_by("-ticket_id")
-
-        return Response({"success": True, "tickets": StudentTicketSerializer(qs, many=True).data}, status=200)
-
-    # ---------------------------- 4. Ticket Details ----------------------------
-    def ticket_detail(self, request):
-        ticket_id = request.GET.get("ticket_id")
-
-        ticket = self.base_qs().filter(ticket_id=ticket_id).first()
-
-        if not ticket:
-            return Response({"success": False, "message": "Ticket not found"}, status=200)
-
-        return Response({"success": True, "data": TicketDetailSerializer(ticket).data}, status=200)
-
-    # ---------------------------- 5. Reply ----------------------------
-    def reply(self, request):
-        ticket_id = request.GET.get("reply_to")
         ticket = StudentTicket.objects.filter(ticket_id=ticket_id).first()
-
         if not ticket:
-            return Response({"success": False, "message": "Ticket not found"}, status=200)
+            return Response({"success": False, "message": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        msg = request.data.get("message")
-        if not msg:
-            return Response({"success": False, "message": "Message required"}, status=200)
+        message = request.data.get("message", "").strip()
+        if not message:
+            return Response({"success": False, "message": "Message is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         user = request.user
+        ut = getattr(user, "user_type", None)
 
-        # Student replying
-        if user.user_type == "student":
-            if ticket.student.registration_id != user.username:
-                return Response({"success": False, "message": "Unauthorized"}, status=200)
-            TicketReply.objects.create(ticket=ticket, message=msg, student=ticket.student)
+        # Permission check for student
+        if ut == "student" and ticket.student.student_id != getattr(user, "student_id", None):
+            return Response({"success": False, "message": "You can only reply to your own tickets"}, status=status.HTTP_403_FORBIDDEN)
 
-        # Admin
-        elif user.user_type == "admin":
+        reply_data = {"ticket": ticket, "message": message}
+
+        if ut == "student":
+            reply_data["student"] = ticket.student
+        elif ut == "admin":
             trainer = Trainer.objects.filter(username=user.username).first()
-            TicketReply.objects.create(ticket=ticket, message=msg, trainer=trainer)
+            if not trainer:
+                return Response({"success": False, "message": "Trainer profile not found"}, status=status.HTTP_400_BAD_REQUEST)
+            reply_data["trainer"] = trainer
             ticket.handled_by_trainer = trainer
-            ticket.save()
-
-        # Super Admin
-        elif user.user_type == "super_admin":
-            TicketReply.objects.create(ticket=ticket, message=msg, super_admin=user)
+        elif ut == "super_admin":
+            reply_data["super_admin"] = user
             ticket.handled_by_superadmin = user
-            ticket.save()
+        else:
+            return Response({"success": False, "message": "Invalid user type"}, status=status.HTTP_403_FORBIDDEN)
 
+        # Create reply
+        reply = TicketReply.objects.create(**reply_data)
+
+        # Update ticket status
         ticket.status = "in_progress"
-        ticket.save()
+        ticket.save(update_fields=["status", "handled_by_trainer", "handled_by_superadmin"])
 
-        return Response({"success": True, "message": "Reply added"}, status=200)
+        # Serialize and return the new reply
+        serialized_reply = TicketReplySerializer(reply, context={'request': request}).data
 
-    # ---------------------------- 6. Close Ticket ----------------------------
+        return Response({
+            "success": True,
+            "message": "Reply added successfully",
+            "reply": serialized_reply
+        }, status=status.HTTP_201_CREATED)
+
+    # Close ticket
     def close_ticket(self, request):
-        ticket_id = request.GET.get("close")
-        ticket = StudentTicket.objects.filter(ticket_id=ticket_id).first()
+        try:
+            ticket_id = int(request.query_params["close"])
+        except (ValueError, TypeError):
+            return Response({"success": False, "message": "Invalid ticket ID"}, status=status.HTTP_400_BAD_REQUEST)
 
+        ticket = StudentTicket.objects.filter(ticket_id=ticket_id).first()
         if not ticket:
-            return Response({"success": False, "message": "Ticket not found"}, status=200)
+            return Response({"success": False, "message": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
 
         ticket.status = "closed"
-        ticket.save()
+        ticket.save(update_fields=["status"])
+        return Response({"success": True, "message": "Ticket closed successfully"}, status=status.HTTP_200_OK)
 
-        return Response({"success": True, "message": "Ticket closed"}, status=200)
+    # Admin scope
+    def get_admin_scope(self, user):
+        ut = getattr(user, "user_type", None)
+        if ut == "super_admin":
+            admin_ids = Trainer.objects.filter(created_by=user.id, created_by_type="super_admin", user_type="admin").values_list("trainer_id", flat=True)
+            return Q(student__created_by=user.id, student__created_by_type="super_admin") | Q(student__created_by__in=admin_ids, student__created_by_type="admin")
+        elif ut == "admin":
+            trainer = Trainer.objects.filter(username=user.username).first()
+            super_id = trainer.created_by if trainer and getattr(trainer, "created_by_type", None) == "super_admin" else None
+            return Q(student__created_by=getattr(user, "trainer_id", None), student__created_by_type="admin") | Q(student__created_by=super_id, student__created_by_type="super_admin")
+        return Q()
+    
+    def patch(self, request):
+        if request.query_params.get("wanda"):
+            return self.edit_reply(request)
+
+        return Response({"success": False, "message": "Invalid PATCH request"}, status=status.HTTP_400_BAD_REQUEST)
+
+    def edit_reply(self, request):
+        user_type = getattr(request.user, "user_type", None)
+        if user_type not in ("admin", "super_admin"):
+            return Response({"success": False, "message": "Only admin can edit replies"}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            reply_id = int(request.query_params["wanda"])
+        except (ValueError, TypeError):
+            return Response({"success": False, "message": "Invalid edit_reply ID"}, status=status.HTTP_400_BAD_REQUEST)
+
+        reply = TicketReply.objects.filter(reply_id=reply_id).first()
+        if not reply:
+            return Response({"success": False, "message": "Reply not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Security: Only the admin who wrote it can edit
+        if user_type == "admin":
+            trainer = Trainer.objects.filter(username=request.user.username).first()
+            if reply.trainer != trainer:
+                return Response({"success": False, "message": "You can only edit your own replies"}, status=status.HTTP_403_FORBIDDEN)
+        elif user_type == "super_admin":
+            if reply.super_admin != request.user:
+                return Response({"success": False, "message": "You can only edit your own replies"}, status=status.HTTP_403_FORBIDDEN)
+
+        new_message = request.data.get("message", "").strip()
+        if not new_message:
+            return Response({"success": False, "message": "Message is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        reply.message = new_message
+        reply.save(update_fields=["message"])
+
+        return Response({
+            "success": True,
+            "message": "Reply updated successfully",
+            "reply": TicketReplySerializer(reply, context={'request': request}).data
+        }, status=status.HTTP_200_OK)
+
 
 class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
     queryset = Attendance.objects.all()
@@ -5172,17 +5198,12 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
     def get_courses_taken(self, request, student_id=None):
         student = self.get_object()
 
-        old_courses_qs = Course.objects.filter(
-            batchcoursetrainer__student=student,
-            is_archived=False
-        )
-
         new_courses_qs = Course.objects.filter(
             new_batches__students=student,
             new_batches__is_archived=False
         )
 
-        all_courses = (old_courses_qs | new_courses_qs).distinct()
+        all_courses = new_courses_qs
 
         if all_courses.exists():
             serialized_data = CourseSerializer(all_courses, many=True,context={"student": student} ).data

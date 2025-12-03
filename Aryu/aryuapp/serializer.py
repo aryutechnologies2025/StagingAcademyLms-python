@@ -3993,26 +3993,45 @@ class MessageSerializer(serializers.ModelSerializer):
         return None
 
 class TicketAttachmentSerializer(serializers.ModelSerializer):
+    file = serializers.SerializerMethodField()
     class Meta:
         model = TicketAttachment
         fields = ["attachment_id", "file", "created_at"]
 
+    def get_file(self, obj):
+        if obj.file and hasattr(obj.file, 'url'):
+            return'https://aylms.aryuprojects.com/api' +obj.file.url
+        return None
 
+
+# serializers.py
 class TicketReplySerializer(serializers.ModelSerializer):
-    sender_type = serializers.CharField(read_only=True)
+    sender_type = serializers.SerializerMethodField()
+    sender_name = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
 
     class Meta:
         model = TicketReply
-        fields = [
-            "reply_id",
-            "sender_type",
-            "message",
-            "created_at",
-        ]
+        fields = ["reply_id", "sender_type", "sender_name", "message", "created_at"]
 
+    def get_sender_type(self, obj):
+        if obj.student: return "student"
+        if obj.trainer: return "admin"
+        if obj.super_admin: return "super_admin"
+        return "unknown"
 
+    def get_sender_name(self, obj):
+        if obj.student: return f"{obj.student.first_name} {obj.student.last_name}"
+        if obj.trainer: return obj.trainer.full_name or obj.trainer.username
+        if obj.super_admin: return "Super Admin"
+        return "Unknown"
+
+# serializers.py
 class StudentTicketSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
+    attachments = serializers.SerializerMethodField()
+    replies = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
 
     class Meta:
         model = StudentTicket
@@ -4021,13 +4040,32 @@ class StudentTicketSerializer(serializers.ModelSerializer):
             "subject",
             "message",
             "status",
+            "priority",
             "student_name",
             "created_at",
+            "attachments",
+            "replies",
         ]
 
     def get_student_name(self, obj):
-        return obj.student.first_name + " " + obj.student.last_name
+        return f"{obj.student.first_name} {obj.student.last_name}".strip()
+    
+    def get_attachments(self, obj):
+        # If you're using prefetch_related("attachments") in your view → obj.attachments exists
+        attachments = obj.attachments.all() if hasattr(obj, 'attachments') else []
+        return TicketAttachmentSerializer(attachments, many=True, read_only=True).data
 
+    def get_replies(self, obj):
+        # If you used prefetch_related("replies__student", etc.) → obj.replies is already optimized
+        qs = getattr(obj, 'replies', None)
+        if qs is None:
+            qs = obj.replies.all().order_by("created_at")
+
+        return TicketReplySerializer(
+            qs,
+            many=True,
+            context=self.context  # For future use (e.g. file URLs in replies later)
+        ).data
 
 class TicketDetailSerializer(serializers.ModelSerializer):
     replies = TicketReplySerializer(many=True)
@@ -4040,6 +4078,7 @@ class TicketDetailSerializer(serializers.ModelSerializer):
             "subject",
             "message",
             "status",
+            "priority",
             "created_at",
             "replies",
             "attachments"
