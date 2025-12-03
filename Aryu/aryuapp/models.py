@@ -1271,6 +1271,7 @@ class StudentTicket(models.Model):
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="tickets")
     subject = models.CharField(max_length=255)
     message = models.TextField()
+    priority = models.CharField(max_length=10, default="low")
     status = models.CharField(max_length=20, default="new")  # open / in_progress / closed
     handled_by_trainer = models.ForeignKey(
         Trainer, on_delete=models.SET_NULL, null=True, blank=True, related_name="handled_tickets"
